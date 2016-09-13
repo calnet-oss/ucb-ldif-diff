@@ -61,8 +61,6 @@ dependencies {
     runtime group: 'org.slf4j', name: 'slf4j-jdk14', version: slf4jVersion
 
     compile group: 'org.springframework.ldap', name: 'spring-ldap-ldif-core', version: '2.1.0.RELEASE'
-
-    compile group: 'com.h2database', name: 'h2', version: '1.4.192'
 }
 
 // gradle run -PappArgs="['build', '$NEW', '$OLD']"
