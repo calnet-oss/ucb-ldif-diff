@@ -63,9 +63,7 @@ dependencies {
     compile group: 'org.springframework.ldap', name: 'spring-ldap-ldif-core', version: '2.1.0.RELEASE'
 }
 
-// gradle run -PappArgs="['build', '$NEW', '$OLD']"
-// or
-// gradle run -PappArgs="['query', '$NEW', '$OLD']"
+// gradle run -PappArgs="['$NEW', '$OLD']"
 run {
     if (project.hasProperty("appArgs")) {
         args Eval.me(appArgs)
