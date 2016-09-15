@@ -45,6 +45,11 @@ import javax.naming.directory.Attribute
  */
 class LdifDiff {
     /**
+     * Extracts UIDs from DNs that start with "uid=".
+     */
+    static final UidExtractor uidExtractor = new UidExtractor()
+
+    /**
      * Main entry to compare two LDIF files.
      *
      * @param args args[0] is the original LDIF filename and args[1] is the new LDIF filename.
@@ -139,28 +144,56 @@ class LdifDiff {
         Collection<String> allDns = (((origIndex?.keySet() ?: []) + (newIndex?.keySet() ?: [])) as HashSet<String>).sort()
         int count = 0
         allDns.each { String dn ->
-            Long origPosition = (origIndex.containsKey(dn) ? origIndex[dn][0] : null)
-            Long newPosition = (newIndex.containsKey(dn) ? newIndex[dn][0] : null)
+            long[] origIndexEntry = origIndex[dn]
+            long[] newIndexEntry = newIndex[dn]
 
-            if (origPosition == null && newPosition == null) {
+            if (origIndexEntry == null && newIndexEntry == null) {
                 throw new RuntimeException("Can't find $dn in either index")
             }
+
+            String origDn = null
+            String newDn = null
+
+            // Check for DN changes.  We extract a unique identifier from
+            // the DN and see if we can find it in the index by its unique
+            // identifier rather than the exact DN match.
+            if (origIndexEntry == null) {
+                IndexEntrySearchResult searchResult = findIndexEntryByDnUniqueIdentifier(origIndex, dn)
+                if (searchResult) {
+                    origDn = searchResult.dn
+                    origIndexEntry = searchResult.entry
+                }
+            } else {
+                origDn = dn
+            }
+            if (newIndexEntry == null) {
+                IndexEntrySearchResult searchResult = findIndexEntryByDnUniqueIdentifier(newIndex, dn)
+                if (searchResult) {
+                    newDn = searchResult.dn
+                    newIndexEntry = searchResult.entry
+                }
+            } else {
+                newDn = dn
+            }
+
+            Long origPosition = (origIndexEntry ? origIndexEntry[0] : null)
+            Long newPosition = (newIndexEntry ? newIndexEntry[0] : null)
 
             // seek to position of entry and read the entry
             LdapAttributes origEntry = null
             LdapAttributes newEntry = null
-            if (origPosition != null) {
+            if (origIndexEntry != null) {
                 origInputStream.channel.position(origPosition)
-                ByteArrayResource resource = entryAsByteArrayResource(origInputStream, origIndex[dn][1] as int)
-                origEntry = readEntry(resource, dn)
+                ByteArrayResource resource = entryAsByteArrayResource(origInputStream, origIndexEntry[1] as int)
+                origEntry = readEntry(resource, origDn)
                 if (origEntry == null) {
                     throw new RuntimeException("readEntry() returned null for original $dn despite it being indexed")
                 }
             }
-            if (newPosition != null) {
+            if (newIndexEntry != null) {
                 newInputStream.channel.position(newPosition)
-                ByteArrayResource resource = entryAsByteArrayResource(newInputStream, newIndex[dn][1] as int)
-                newEntry = readEntry(resource, dn)
+                ByteArrayResource resource = entryAsByteArrayResource(newInputStream, newIndexEntry[1] as int)
+                newEntry = readEntry(resource, newDn)
                 if (newEntry == null) {
                     throw new RuntimeException("readEntry() returned null for new $dn despite it being indexed")
                 }
@@ -174,6 +207,49 @@ class LdifDiff {
                 println("Processed $count entries")
             }
         }
+    }
+
+    /**
+     * Result for findIndexEntryByDnUniqueIdentifier()
+     */
+    static class IndexEntrySearchResult {
+        String dn
+        long[] entry
+    }
+
+    /**
+     * For cases where a DN may have changed, find an index entry by
+     * extracting the unique identifier from the DN and search the index for
+     * that unique identifier to see if there is another DN that matches
+     * against the unique identifier.
+     *
+     * <p>In cases where there may exist multiple DNs for one primary
+     * identifier, this search will return the <b>first one</b> it finds in
+     * the index keySet.</p>
+     *
+     * @param index The index to search.
+     * @param dn The DN to extract the unique identifier from.
+     * @return An instance IndexEntrySearchResult containing the dn and index entry if a match was found.  If not, null is returned.
+     */
+    static IndexEntrySearchResult findIndexEntryByDnUniqueIdentifier(LinkedHashMap<String, long[]> index, String dn) {
+        String uniqueIdentifierDnPrefix = uniqueIdentifierExtractor.extractUniqueIdentifierAsDnPrefix(dn)
+        if (uniqueIdentifierDnPrefix) {
+            for (Map.Entry<String, long[]> entry : index) {
+                if (entry.key.startsWith(uniqueIdentifierDnPrefix)) {
+                    return new IndexEntrySearchResult(dn: entry.key, entry: entry.value)
+                }
+            }
+        }
+        return null
+    }
+
+    /**
+     * Overridable method to get a unique identifier extractor for a DN.
+     *
+     * @return An implementation of the UniqueIdentifierExtractor interface.
+     */
+    static UniqueIdentifierExtractor getUniqueIdentifierExtractor() {
+        return uidExtractor
     }
 
     /**
@@ -228,9 +304,25 @@ class LdifDiff {
         if (origEntry == null && newEntry == null) {
             throw new IllegalArgumentException("origEntry and newEntry can't both be null")
         }
-        String dn = (origEntry?.name ?: newEntry?.name)
+        String origDn = origEntry?.name
+        String newDn = newEntry?.name
         if (origEntry?.hashCode() != newEntry?.hashCode()) {
-            println("\ndn: $dn")
+            if (origDn == newDn) {
+                // DN hasn't changed
+                println("\ndn: $origDn")
+            } else if (origDn && newDn && origDn != newDn) {
+                // DN has been changed
+                println("\n- $origDn")
+                println("+ $newDn")
+            } else if (origDn && !newDn) {
+                // DN has been removed
+                println("\n- $origDn")
+            } else if (!origDn && newDn) {
+                // DN has been added
+                println("\n+ $newDn")
+            } else {
+                throw new IllegalStateException("bad DN state")
+            }
             Collection<String> attrNames = (((origEntry?.all?.collect { it.ID } ?: []) + (newEntry?.all?.collect { it.ID } ?: [])) as HashSet<String>).sort()
 
             attrNames.each { String attrName ->
